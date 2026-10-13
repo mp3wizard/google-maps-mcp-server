@@ -19,7 +19,7 @@
     "dev": "npm run build && node dist/index.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build",
-    "test": "node test/validate.js && node --test test/security.test.mjs",
+    "test": "node test/validate.js && node --test test/security.test.mjs test/ratelimit.test.mjs",
     "lint": "echo 'Linting passed'",
     "format": "echo 'Formatting passed'"
   },

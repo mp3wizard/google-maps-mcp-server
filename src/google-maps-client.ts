@@ -19,12 +19,12 @@ export class GoogleMapsClient {
     this.rateLimitWindowMs = parseInt(process.env.GOOGLE_MAPS_RATE_LIMIT_WINDOW_MS || '60000'); // Default: 1 minute
     this.rateLimitMaxRequests = parseInt(process.env.GOOGLE_MAPS_RATE_LIMIT_MAX_REQUESTS || '100'); // Default: 100 requests
 
-    // Validate rate limit configuration
-    if (this.rateLimitWindowMs <= 0) {
+    // Validate rate limit configuration (non-numeric values parse to NaN and must not disable the limiter)
+    if (!(this.rateLimitWindowMs > 0)) {
       console.warn('Invalid GOOGLE_MAPS_RATE_LIMIT_WINDOW_MS, using default: 60000ms');
       this.rateLimitWindowMs = 60000;
     }
-    if (this.rateLimitMaxRequests <= 0) {
+    if (!(this.rateLimitMaxRequests > 0)) {
       console.warn('Invalid GOOGLE_MAPS_RATE_LIMIT_MAX_REQUESTS, using default: 100');
       this.rateLimitMaxRequests = 100;
     }
@@ -37,7 +37,8 @@ export class GoogleMapsClient {
     body?: any,
     cacheTtl?: number,
     customBaseUrl?: string,
-    fieldMask?: string
+    fieldMask?: string,
+    limiterKey?: string
   ): Promise<any> {
     const cacheKey = `${endpoint}:${JSON.stringify(params)}:${JSON.stringify(body)}`;
 
@@ -50,9 +51,10 @@ export class GoogleMapsClient {
       this.cache.delete(cacheKey);
     }
 
-    // Rate limiting check
+    // Rate limiting check. The bucket key must be a fixed string per API operation:
+    // never derive it from model-supplied values, or every new value gets a fresh bucket.
     if (this.rateLimitEnabled) {
-      await this.checkRateLimit(endpoint);
+      await this.checkRateLimit(limiterKey ?? endpoint);
     }
 
     const url = new URL(`${customBaseUrl || this.baseUrl}${endpoint}`);
@@ -141,7 +143,7 @@ export class GoogleMapsClient {
 
         // Cache successful response
         if (cacheTtl) {
-          this.cache.set(cacheKey, {
+          this.storeInCache(cacheKey, {
             data,
             timestamp: Date.now(),
             ttl: cacheTtl
@@ -196,6 +198,24 @@ export class GoogleMapsClient {
     }
 
     requests.push(now);
+  }
+
+  // Bounded cache: drop expired entries first, then the oldest, so unique keys cannot grow it forever
+  private static readonly CACHE_MAX_ENTRIES = 1000;
+
+  private storeInCache(key: string, entry: { data: any; timestamp: number; ttl: number }): void {
+    if (this.cache.size >= GoogleMapsClient.CACHE_MAX_ENTRIES) {
+      const now = Date.now();
+      for (const [k, v] of this.cache) {
+        if (now - v.timestamp >= v.ttl) this.cache.delete(k);
+      }
+      while (this.cache.size >= GoogleMapsClient.CACHE_MAX_ENTRIES) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest === undefined) break;
+        this.cache.delete(oldest);
+      }
+    }
+    this.cache.set(key, entry);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -371,7 +391,10 @@ export class GoogleMapsClient {
     if (options.region) body.regionCode = options.region;
     if (options.sessionToken) body.sessionToken = options.sessionToken;
 
-    const data = await this.makeRequest(`/v1/places/${placeId}`, {}, 'GET', undefined, 300000, 'https://places.googleapis.com');
+    // place_id is model-supplied: the limiter bucket is a fixed template so all ids share one budget
+    const data = await this.makeRequest(
+      `/v1/places/${placeId}`, {}, 'GET', undefined, 300000, 'https://places.googleapis.com', undefined, '/v1/places/{id}'
+    );
 
     return this.formatPlaceResult(data);
   }
