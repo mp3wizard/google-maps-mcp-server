@@ -152,7 +152,10 @@ export class GoogleMapsClient {
       } catch (error) {
         if (retries === 1) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          const context: any = { endpoint, url: url.toString() };
+          // Never expose the authenticated URL: drop the key query parameter first
+          const safeUrl = new URL(url.toString());
+          safeUrl.searchParams.delete('key');
+          const context: any = { endpoint, url: safeUrl.toString() };
 
           // Add more context if it's an MCP error
           if (typeof error === 'object' && error !== null && 'context' in error) {
@@ -199,8 +202,33 @@ export class GoogleMapsClient {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  // Every error that leaves the client passes through here, so the API key can never
+  // reach tool results (message, context, nested values), whatever produced the text.
   private createMCPError(code: string, message: string, context?: any): MCPError {
-    return { code, message, context };
+    return { code, message: this.redactSecrets(message), context: this.redactDeep(context) };
+  }
+
+  private redactSecrets(text: string): string {
+    if (typeof text !== 'string' || !this.apiKey) return text;
+    const forms = new Set([
+      this.apiKey,
+      encodeURIComponent(this.apiKey),
+      new URLSearchParams({ k: this.apiKey }).toString().slice(2)
+    ]);
+    let out = text;
+    for (const form of [...forms].sort((a, b) => b.length - a.length)) {
+      if (form) out = out.split(form).join('[REDACTED]');
+    }
+    return out;
+  }
+
+  private redactDeep(value: any): any {
+    if (typeof value === 'string') return this.redactSecrets(value);
+    if (Array.isArray(value)) return value.map(item => this.redactDeep(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.redactDeep(v)]));
+    }
+    return value;
   }
 
   // Geocoding API methods
@@ -358,7 +386,38 @@ export class GoogleMapsClient {
       url.searchParams.append(key, String(value));
     });
 
-    return url.toString();
+    if (this.rateLimitEnabled) {
+      await this.checkRateLimit('/place/photo');
+    }
+
+    // The key-bearing URL stays inside this method. Google answers the photo request with a
+    // redirect to a keyless image URL; we read it without following it and return only that.
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), { redirect: 'manual', signal: AbortSignal.timeout(30000) });
+    } catch (error) {
+      throw this.createMCPError(
+        'REQUEST_FAILED',
+        error instanceof Error ? error.message : 'Unknown error',
+        { endpoint: '/place/photo' }
+      );
+    }
+
+    const location = response.headers.get('Location');
+    if (response.status >= 300 && response.status < 400 && location) {
+      const photoUrl = new URL(location, url).toString();
+      if (this.redactSecrets(photoUrl) !== photoUrl) {
+        throw this.createMCPError('PHOTO_UNAVAILABLE', 'Photo redirect target contained credentials; refusing to return it', {
+          endpoint: '/place/photo'
+        });
+      }
+      return photoUrl;
+    }
+
+    throw this.createMCPError('PHOTO_UNAVAILABLE', `Photo request did not return a redirect (HTTP ${response.status})`, {
+      endpoint: '/place/photo',
+      status: response.status
+    });
   }
 
   // Routes API v2 methods

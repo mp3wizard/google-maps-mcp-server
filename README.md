@@ -320,10 +320,10 @@ Common error codes:
 
 ## Security
 
-- API keys are never logged or exposed
-- Input validation prevents injection attacks
-- Rate limiting protects against abuse
-- IP addresses are hashed in logs for privacy
+- The API key is never returned to the MCP client: it is redacted from every error message and error context, and `places_photos` resolves the photo server-side and returns a keyless URL
+- Tool arguments are type-checked with zod (value ranges are not enforced)
+- Rate limiting is per endpoint and in-process; the real spending limit is the quota and key restrictions you set in Google Cloud, so restrict your key to the APIs you enable
+- Regression tests for the key-redaction guarantees run with `npm test`
 
 ## Contributing
 

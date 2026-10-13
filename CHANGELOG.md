@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- The Google API key is no longer returned to the MCP client. Error messages and error context are redacted, and the request URL in an error context no longer carries the `key` query parameter (previously any failed geocode, reverse geocode, elevation, time zone, roads or geolocation request exposed the key, including ordinary `ZERO_RESULTS`)
+- `places_photos` no longer returns a URL that embeds the API key; the server requests the photo without following the redirect and returns the keyless image URL
+- Added `test/security.test.mjs` regression tests (run by `npm test`)
+
+### Changed
+- Added a `prepare` script so the package builds when installed directly from GitHub
+
 ## [1.1.0] - 2025-09-30
 
 ### Changed

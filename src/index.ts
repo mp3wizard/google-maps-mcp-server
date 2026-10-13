@@ -226,7 +226,7 @@ class GoogleMapsMCPServer {
           },
           {
             name: 'places_photos',
-            description: 'Get signed photo URLs for a place',
+            description: 'Get a photo URL for a place photo reference. The server resolves the photo itself, so the returned URL never contains the API key',
             inputSchema: {
               type: 'object',
               properties: {
