@@ -13,7 +13,7 @@ A Model Context Protocol (MCP) server that provides comprehensive access to Goog
 - 📍 **Precise Geocoding** - Forward and reverse geocoding with international support
 - 🌐 **Geolocation Services** - IP-based and WiFi/cellular location estimation
 - 📊 **Rich Resources** - Built-in documentation and examples accessible via MCP resources
-- 🔒 **Security First** - Input validation, rate limiting, and secure API key handling
+- 🔒 **Security** - Argument type checks, an in-process request limiter, and API key redaction (the key is never returned to the MCP client)
 
 ## Quick Start
 
@@ -227,11 +227,21 @@ The `ip_geolocate` tool also supports an optional `ip_override` parameter for te
 #### Rate Limiting Configuration
 
 - **`GOOGLE_MAPS_RATE_LIMIT_ENABLED`** (optional, default: `true`) - Enable/disable rate limiting
-  - Set to `false` to disable rate limiting entirely
+  - Only the exact value `false` disables it; anything else leaves it on
 - **`GOOGLE_MAPS_RATE_LIMIT_WINDOW_MS`** (optional, default: `60000`) - Rate limit window in milliseconds
   - Controls the time window for rate limiting (e.g., 60000 = 1 minute)
 - **`GOOGLE_MAPS_RATE_LIMIT_MAX_REQUESTS`** (optional, default: `100`) - Maximum requests per window
-  - Maximum number of requests allowed per endpoint within the time window
+  - Maximum number of requests allowed per limiter bucket within the time window (see below)
+- A value that is not a positive number (for example `abc` or `0`) is ignored with a warning on stderr and the default is used; it never turns the limiter off
+
+#### How the limiter behaves
+
+- **It delays, it does not reject.** When a bucket is full, the next call waits until the window frees a slot, then runs. Callers see a slow call, not an error.
+- **Buckets are per Google API endpoint, not per tool.** For example `geocode_search`, `geocode_reverse` and the geocoding step of `nearby_find` share the `/geocode/json` bucket, and every `places_details` call shares one bucket no matter which `place_id` it asks for. `places_photos` has its own bucket. Each bucket allows `GOOGLE_MAPS_RATE_LIMIT_MAX_REQUESTS` calls per window, so the total across all endpoints can be a multiple of that number.
+- **Cached answers do not use budget.** Short-lived caches serve repeated identical lookups (geocoding, elevation, time zone, places search, nearby search and place details) without a request to Google and without taking a slot. The cache holds at most 1000 entries.
+- **Retries are not counted.** A call that fails is retried up to 3 times (with backoff) but takes one slot, so a failing call can send up to 3 requests to Google.
+- **It lives inside the server process.** The counters reset whenever the server restarts, and several server processes each have their own limits.
+- **It is not a spending cap.** One call can still bill for many items (for example a `routes_matrix` with many origins and destinations counts as one call). Set quotas and budget alerts in Google Cloud for a real limit.
 
 #### Example Rate Limiting Configurations
 
