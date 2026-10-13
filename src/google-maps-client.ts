@@ -781,8 +781,9 @@ export class GoogleMapsClient {
 
   // Helper methods
   private formatLocationForRoutes(location: Location | { address: string }): any {
+    // Routes API Waypoint: `address` sits next to `location`, not inside it
     if ('address' in location) {
-      return { location: { address: location.address } };
+      return { address: location.address };
     }
     return { location: { latLng: { latitude: location.lat, longitude: location.lng } } };
   }

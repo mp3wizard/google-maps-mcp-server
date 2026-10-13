@@ -159,3 +159,32 @@ test('routes_matrix: same rules (no routingPreference for WALK, departureTime fo
   const err = await failure(() => c.routesMatrix([A], [B], { travelMode: 'BICYCLE', routingPreference: 'TRAFFIC_AWARE' }));
   assert.equal(err.code, 'INVALID_REQUEST');
 });
+
+test('address waypoints use the Routes API shape {address}, not {location:{address}} (HTTP 400 regression)', async () => {
+  const calls = capture({ routes: [{ duration: '600s', staticDuration: '500s', distanceMeters: 5000 }] });
+  const c = new GoogleMapsClient('K');
+
+  await c.routesCompute({ address: 'BTS Sala Daeng, Bangkok' }, { address: 'Siam Paragon, Bangkok' }, {
+    waypoints: [{ location: { address: 'Chulalongkorn University' } }, { location: A }]
+  });
+  const body = calls[0].body;
+  assert.deepEqual(body.origin, { address: 'BTS Sala Daeng, Bangkok' });
+  assert.deepEqual(body.destination, { address: 'Siam Paragon, Bangkok' });
+  assert.deepEqual(body.intermediates[0], { address: 'Chulalongkorn University' });
+  assert.deepEqual(body.intermediates[1], { location: { latLng: { latitude: A.lat, longitude: A.lng } } });
+  assert.equal(JSON.stringify(body).includes('"location":{"address"'), false);
+
+  // coordinates keep working and mixing both is fine
+  await c.routesCompute(A, { address: 'Siam Paragon, Bangkok' });
+  assert.deepEqual(calls[1].body.origin, { location: { latLng: { latitude: A.lat, longitude: A.lng } } });
+  assert.deepEqual(calls[1].body.destination, { address: 'Siam Paragon, Bangkok' });
+});
+
+test('routes_matrix: address origins and destinations use the Routes API shape', async () => {
+  const calls = capture([]);
+  await new GoogleMapsClient('K').routesMatrix([{ address: 'Silom' }, A], [{ address: 'Sukhumvit 49' }]);
+  const body = calls[0].body;
+  assert.deepEqual(body.origins[0], { waypoint: { address: 'Silom' } });
+  assert.deepEqual(body.origins[1], { waypoint: { location: { latLng: { latitude: A.lat, longitude: A.lng } } } });
+  assert.deepEqual(body.destinations[0], { waypoint: { address: 'Sukhumvit 49' } });
+});

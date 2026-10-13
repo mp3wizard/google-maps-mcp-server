@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `duration_in_traffic_seconds` was filled from `staticDuration` (the no-traffic duration) and the field was never requested from Google, so it was always empty; it now holds the traffic-aware duration
 - `routingPreference` is no longer sent for walking, cycling and transit requests, which Google rejects; passing `routing_preference` with those modes now fails fast with a clear error
+- `routes_compute` and `routes_matrix` failed with HTTP 400 (`Unknown name "address" at 'origin.location'`) whenever an origin, destination or waypoint was given as an address: the address was nested inside `location`, but the Routes API expects `address` beside it. Addresses and coordinates now both work
 - `routes_compute` no longer claims toll information in its description (tolls are not reported)
 
 ### Changed
