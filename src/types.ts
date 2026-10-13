@@ -78,8 +78,8 @@ export const PlacesDetailsSchema = z.object({
 
 export const PlacesPhotosSchema = z.object({
   photo_reference: z.string(),
-  max_width: z.number().optional(),
-  max_height: z.number().optional()
+  max_width: z.number().int().min(1).max(4800).optional(),
+  max_height: z.number().int().min(1).max(4800).optional()
 });
 
 // Routes schemas

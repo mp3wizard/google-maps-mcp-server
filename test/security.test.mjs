@@ -74,48 +74,83 @@ test('upstream error text that repeats the key is redacted', async () => {
 function photoServer(handler) {
   return new Promise((resolve) => {
     const seen = [];
-    const server = http.createServer((req, res) => { seen.push(req.url); handler(req, res); });
-    server.listen(0, '127.0.0.1', () => resolve({ server, seen, base: `http://127.0.0.1:${server.address().port}/maps/api` }));
+    const server = http.createServer((req, res) => { seen.push({ url: req.url, key: req.headers['x-goog-api-key'] }); handler(req, res); });
+    server.listen(0, '127.0.0.1', () => resolve({ server, seen, base: `http://127.0.0.1:${server.address().port}` }));
   });
 }
 
-test('places_photos returns the keyless redirect target, not a key-bearing URL', async () => {
-  const { server, seen, base } = await photoServer((_req, res) => {
-    res.writeHead(302, { Location: 'https://lh3.googleusercontent.com/photo-abc' });
-    res.end();
-  });
+const PHOTO = 'places/ChIJabc_123/photos/AUc7tXV-ref_456';
+const json = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+
+test('places_photos (Places API New) returns the keyless photoUri; key only in the header', async () => {
+  const { server, seen, base } = await photoServer((_req, res) => json(res, 200, { name: `${PHOTO}/media`, photoUri: 'https://lh3.googleusercontent.com/photo-abc' }));
   try {
     const c = client();
-    c.baseUrl = base;
-    const url = await c.placesPhotos('REF', 400, 300);
+    c.placesBaseUrl = base;
+    const url = await c.placesPhotos(PHOTO);
     assert.equal(url, 'https://lh3.googleusercontent.com/photo-abc');
-    assert.ok(!url.includes(KEY));
-    assert.equal(seen.length, 1, 'redirect must not be followed');
-    assert.ok(seen[0].includes(`key=${KEY}`), 'the server-side request still authenticates with the key');
+    assert.equal(seen.length, 1);
+    const reqUrl = new URL(seen[0].url, base);
+    assert.equal(reqUrl.pathname, `/v1/${PHOTO}/media`);
+    assert.equal(reqUrl.searchParams.get('skipHttpRedirect'), 'true');
+    assert.equal(reqUrl.searchParams.get('maxWidthPx'), '400', 'default size when none is given');
+    assert.equal(reqUrl.searchParams.get('key'), null, 'key must not be in the URL');
+    assert.equal(seen[0].key, KEY, 'key is sent in X-Goog-Api-Key');
   } finally { server.close(); }
 });
 
-test('places_photos refuses a redirect target that carries the key', async () => {
-  const { server, base } = await photoServer((_req, res) => {
-    res.writeHead(302, { Location: `https://example.invalid/p?key=${KEY}` });
-    res.end();
-  });
+test('places_photos passes the requested sizes', async () => {
+  const { server, seen, base } = await photoServer((_req, res) => json(res, 200, { photoUri: 'https://lh3.googleusercontent.com/p' }));
   try {
     const c = client();
-    c.baseUrl = base;
-    const err = await failure(() => c.placesPhotos('REF'));
-    assert.ok(!serialize(err).includes(KEY));
-    assert.equal(err.code, 'PHOTO_UNAVAILABLE');
+    c.placesBaseUrl = base;
+    await c.placesPhotos(PHOTO, 800, 600);
+    const q = new URL(seen[0].url, base).searchParams;
+    assert.equal(q.get('maxWidthPx'), '800');
+    assert.equal(q.get('maxHeightPx'), '600');
   } finally { server.close(); }
 });
 
-test('places_photos without a redirect fails cleanly and does not leak the key', async () => {
-  const { server, base } = await photoServer((_req, res) => { res.writeHead(200); res.end('not a redirect'); });
+test('places_photos refuses a redirect and never forwards the key header to the redirect target', async () => {
+  const target = await photoServer((_req, res) => json(res, 200, { photoUri: 'https://lh3.googleusercontent.com/x' }));
+  const origin = await photoServer((_req, res) => { res.writeHead(302, { Location: `http://localhost:${new URL(target.base).port}/elsewhere` }); res.end(); });
   try {
     const c = client();
-    c.baseUrl = base;
-    const err = await failure(() => c.placesPhotos('REF'));
+    c.placesBaseUrl = origin.base;
+    const err = await failure(() => c.placesPhotos(PHOTO));
+    assert.equal(target.seen.length, 0, 'redirect target must receive nothing');
     assert.ok(!serialize(err).includes(KEY));
+  } finally { origin.server.close(); target.server.close(); }
+});
+
+test('places_photos refuses a photoUri that carries the key', async () => {
+  const { server, base } = await photoServer((_req, res) => json(res, 200, { photoUri: `https://example.invalid/p?key=${KEY}` }));
+  try {
+    const c = client();
+    c.placesBaseUrl = base;
+    const err = await failure(() => c.placesPhotos(PHOTO));
     assert.equal(err.code, 'PHOTO_UNAVAILABLE');
+    assert.ok(!serialize(err).includes(KEY));
   } finally { server.close(); }
+});
+
+test('places_photos upstream error fails cleanly without leaking the key', async () => {
+  const { server, base } = await photoServer((_req, res) => json(res, 403, { error: { message: `API key ${KEY} not valid` } }));
+  try {
+    const c = client();
+    c.placesBaseUrl = base;
+    const err = await failure(() => c.placesPhotos(PHOTO));
+    assert.equal(err.code, 'PHOTO_UNAVAILABLE');
+    assert.ok(!serialize(err).includes(KEY));
+  } finally { server.close(); }
+});
+
+test('places_photos rejects anything that is not a Places API (New) photo name, without any request', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error('should not be called'); };
+  for (const bad of ['legacyPhotoReference123', '../../v1/places:searchText', 'places/x/photos/y/../../z', 'places/x/photos/y?key=1', '']) {
+    const err = await failure(() => client().placesPhotos(bad));
+    assert.equal(err.code, 'INVALID_REQUEST', bad);
+  }
+  assert.equal(calls, 0);
 });

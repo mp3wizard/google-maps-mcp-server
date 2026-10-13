@@ -226,13 +226,13 @@ class GoogleMapsMCPServer {
           },
           {
             name: 'places_photos',
-            description: 'Get a photo URL for a place photo reference. The server resolves the photo itself, so the returned URL never contains the API key',
+            description: 'Get a photo URL for a place photo (Places API (New)). The server resolves the photo itself, so the returned URL never contains the API key',
             inputSchema: {
               type: 'object',
               properties: {
-                photo_reference: { type: 'string', description: 'Photo reference from place details' },
-                max_width: { type: 'number', description: 'Maximum width in pixels' },
-                max_height: { type: 'number', description: 'Maximum height in pixels' }
+                photo_reference: { type: 'string', description: 'The photo name from the photos[] array of places_search_text, places_nearby or places_details results, in the form places/{placeId}/photos/{photoRef}' },
+                max_width: { type: 'number', minimum: 1, maximum: 4800, description: 'Maximum width in pixels (1-4800). Defaults to 400 if neither size is given' },
+                max_height: { type: 'number', minimum: 1, maximum: 4800, description: 'Maximum height in pixels (1-4800)' }
               },
               required: ['photo_reference']
             }

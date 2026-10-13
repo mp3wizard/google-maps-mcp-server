@@ -3,6 +3,7 @@ import { GeocodeResult, Location, MCPError, PlaceResult, RouteResult } from './t
 export class GoogleMapsClient {
   private apiKey: string;
   private baseUrl = 'https://maps.googleapis.com/maps/api';
+  private placesBaseUrl = 'https://places.googleapis.com';
   private cache = new Map<string, { data: any; timestamp: number; ttl: number }>();
   private rateLimiter = new Map<string, number[]>();
 
@@ -399,48 +400,76 @@ export class GoogleMapsClient {
     return this.formatPlaceResult(data);
   }
 
-  async placesPhotos(photoReference: string, maxWidth?: number, maxHeight?: number): Promise<string> {
-    const params: any = { photoreference: photoReference };
-    if (maxWidth) params.maxwidth = maxWidth;
-    if (maxHeight) params.maxheight = maxHeight;
+  // Places API (New) Place Photos. photoName is the `name` of a photos[] entry returned by
+  // places_search_text, places_nearby or places_details: places/{placeId}/photos/{photoRef}
+  async placesPhotos(photoName: string, maxWidth?: number, maxHeight?: number): Promise<string> {
+    const endpoint = '/v1/{photo}/media';
 
-    const url = new URL(`${this.baseUrl}/place/photo`);
-    Object.entries({ ...params, key: this.apiKey }).forEach(([key, value]) => {
-      url.searchParams.append(key, String(value));
-    });
-
-    if (this.rateLimitEnabled) {
-      await this.checkRateLimit('/place/photo');
-    }
-
-    // The key-bearing URL stays inside this method. Google answers the photo request with a
-    // redirect to a keyless image URL; we read it without following it and return only that.
-    let response: Response;
-    try {
-      response = await fetch(url.toString(), { redirect: 'manual', signal: AbortSignal.timeout(30000) });
-    } catch (error) {
+    // Strict shape check: also stops a model-supplied value from steering the request path
+    if (!/^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/.test(photoName)) {
       throw this.createMCPError(
-        'REQUEST_FAILED',
-        error instanceof Error ? error.message : 'Unknown error',
-        { endpoint: '/place/photo' }
+        'INVALID_REQUEST',
+        'photo_reference must be a Places API (New) photo name: places/{placeId}/photos/{photoRef}',
+        { endpoint }
       );
     }
 
-    const location = response.headers.get('Location');
-    if (response.status >= 300 && response.status < 400 && location) {
-      const photoUrl = new URL(location, url).toString();
-      if (this.redactSecrets(photoUrl) !== photoUrl) {
-        throw this.createMCPError('PHOTO_UNAVAILABLE', 'Photo redirect target contained credentials; refusing to return it', {
-          endpoint: '/place/photo'
-        });
-      }
-      return photoUrl;
+    // The API requires maxWidthPx and/or maxHeightPx (1-4800)
+    const url = new URL(`${this.placesBaseUrl}/v1/${photoName}/media`);
+    if (maxWidth) url.searchParams.set('maxWidthPx', String(maxWidth));
+    if (maxHeight) url.searchParams.set('maxHeightPx', String(maxHeight));
+    if (!maxWidth && !maxHeight) url.searchParams.set('maxWidthPx', '400');
+    url.searchParams.set('skipHttpRedirect', 'true');
+
+    if (this.rateLimitEnabled) {
+      await this.checkRateLimit('/v1/places/{id}/photos/{ref}/media');
     }
 
-    throw this.createMCPError('PHOTO_UNAVAILABLE', `Photo request did not return a redirect (HTTP ${response.status})`, {
-      endpoint: '/place/photo',
-      status: response.status
-    });
+    // The key travels only in the header. With skipHttpRedirect=true Google answers with JSON, so a
+    // redirect is unexpected: refuse it rather than let fetch forward the key header to another host.
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), {
+        headers: { 'X-Goog-Api-Key': this.apiKey },
+        redirect: 'error',
+        signal: AbortSignal.timeout(30000)
+      });
+    } catch (error) {
+      throw this.createMCPError('REQUEST_FAILED', error instanceof Error ? error.message : 'Unknown error', { endpoint });
+    }
+
+    if (!response.ok) {
+      let details = '';
+      try {
+        details = JSON.stringify(await response.json());
+      } catch (e) {
+        // Not JSON: status text is enough
+      }
+      throw this.createMCPError(
+        'PHOTO_UNAVAILABLE',
+        `HTTP ${response.status}: ${response.statusText}${details ? ' - ' + details : ''}`,
+        { endpoint, status: response.status }
+      );
+    }
+
+    let photoUri = '';
+    try {
+      const data = await response.json();
+      if (typeof data?.photoUri === 'string') photoUri = data.photoUri;
+    } catch (e) {
+      // handled below
+    }
+
+    let parsed: URL | undefined;
+    try {
+      parsed = new URL(photoUri);
+    } catch (e) {
+      parsed = undefined;
+    }
+    if (!parsed || parsed.protocol !== 'https:' || this.redactSecrets(photoUri) !== photoUri) {
+      throw this.createMCPError('PHOTO_UNAVAILABLE', 'Photo response did not contain a usable keyless photoUri', { endpoint });
+    }
+    return photoUri;
   }
 
   // Routes API v2 methods

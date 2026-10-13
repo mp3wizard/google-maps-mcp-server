@@ -135,7 +135,7 @@ npx google-maps-mcp-server
 - **`places_nearby`** - Find places within a radius
 - **`places_autocomplete`** - Get place suggestions
 - **`places_details`** - Get detailed place information
-- **`places_photos`** - Get place photo URLs
+- **`places_photos`** - Get a keyless photo URL for a photo `name` (`places/{placeId}/photos/{photoRef}`) from the `photos` of a Places search or details result (Places API (New) Place Photos)
 
 ### Routing
 - **`routes_compute`** - Calculate optimal routes
