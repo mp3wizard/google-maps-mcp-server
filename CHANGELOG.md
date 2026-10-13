@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiter: `places_details` no longer gets a fresh limiter bucket for every `place_id` (the bucket key is now the fixed `/v1/places/{id}`), so the documented per-endpoint cap applies to it; the response cache is capped at 1000 entries; non-numeric `GOOGLE_MAPS_RATE_LIMIT_*` values now fall back to the defaults instead of silently disabling the limiter
 - Added `test/security.test.mjs` and `test/ratelimit.test.mjs` regression tests (run by `npm test`)
 
+### Added
+- `routes_compute` reports `static_duration_seconds` (without traffic) and `traffic_delay_seconds` for traffic-aware driving requests, accepts `departure_time` (RFC 3339 with time zone) to predict traffic, and returns the slow and jammed stretches of the route with `include_traffic_segments` (billed by Google at a higher Routes rate). `routes_matrix` accepts `departure_time`
+- `test/routes.test.mjs`
+
+### Fixed
+- `duration_in_traffic_seconds` was filled from `staticDuration` (the no-traffic duration) and the field was never requested from Google, so it was always empty; it now holds the traffic-aware duration
+- `routingPreference` is no longer sent for walking, cycling and transit requests, which Google rejects; passing `routing_preference` with those modes now fails fast with a clear error
+- `routes_compute` no longer claims toll information in its description (tolls are not reported)
+
 ### Changed
 - Added a `prepare` script so the package builds when installed directly from GitHub
 

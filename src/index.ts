@@ -241,7 +241,7 @@ class GoogleMapsMCPServer {
           // Routes tools
           {
             name: 'routes_compute',
-            description: 'Calculate optimal routes between locations with real-time traffic data, toll information, and alternative route options. Supports multiple travel modes including driving, walking, cycling, and transit.',
+            description: 'Calculate routes between locations. For driving (DRIVE) the duration already reflects traffic (current traffic, or predicted traffic when departure_time is set) and the result also reports the no-traffic duration and the traffic delay in seconds; set include_traffic_segments to list the slow and jammed stretches along the route (billed at a higher Routes rate). Also supports walking, cycling and transit, and alternative routes.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -323,7 +323,9 @@ class GoogleMapsMCPServer {
                   }
                 },
                 travel_mode: { type: 'string', enum: ['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT'], description: 'Transportation mode for the route' },
-                routing_preference: { type: 'string', enum: ['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL'], description: 'Routing algorithm preference' },
+                routing_preference: { type: 'string', enum: ['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL'], description: 'Traffic handling, DRIVE only (rejected for other travel modes). Defaults to TRAFFIC_AWARE for driving' },
+                departure_time: { type: 'string', description: 'When to leave, as an RFC 3339 timestamp with time zone (e.g. "2026-10-14T08:00:00+07:00"), to get predicted traffic. Defaults to now. Must not be in the past except for TRANSIT' },
+                include_traffic_segments: { type: 'boolean', description: 'Also return the slow and jammed stretches along the route. Driving only, needs TRAFFIC_AWARE or TRAFFIC_AWARE_OPTIMAL, and is billed at a higher Routes rate' },
                 compute_alternative_routes: { type: 'boolean', description: 'Whether to compute alternative routes' },
                 avoid_tolls: { type: 'boolean', description: 'Avoid toll roads' },
                 avoid_highways: { type: 'boolean', description: 'Avoid highways' },
@@ -337,7 +339,7 @@ class GoogleMapsMCPServer {
           },
           {
             name: 'routes_matrix',
-            description: 'Compute distance matrix between multiple origins and destinations',
+            description: 'Compute distance and travel time between multiple origins and destinations. For driving the durations reflect traffic (current, or predicted when departure_time is set)',
             inputSchema: {
               type: 'object',
               properties: {
@@ -394,7 +396,8 @@ class GoogleMapsMCPServer {
                   }
                 },
                 travel_mode: { type: 'string', enum: ['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT'], description: 'Transportation mode for distance calculations' },
-                routing_preference: { type: 'string', enum: ['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL'], description: 'Routing algorithm preference' },
+                routing_preference: { type: 'string', enum: ['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL'], description: 'Traffic handling, DRIVE only (rejected for other travel modes). Defaults to TRAFFIC_AWARE for driving' },
+                departure_time: { type: 'string', description: 'When to leave, as an RFC 3339 timestamp with time zone (e.g. "2026-10-14T08:00:00+07:00"). Defaults to now. Must not be in the past except for TRANSIT' },
                 language: { type: 'string', description: 'Language code for results (ISO 639-1, e.g., "en", "es", "fr")' },
                 region: { type: 'string', description: 'Region code for biasing results (ISO 3166-1 alpha-2, e.g., "US", "GB", "DE")' },
                 units: { type: 'string', enum: ['METRIC', 'IMPERIAL'], description: 'Unit system for distances' }
@@ -789,6 +792,8 @@ class GoogleMapsMCPServer {
       waypoints: input.waypoints,
       travelMode: input.travel_mode,
       routingPreference: input.routing_preference,
+      departureTime: input.departure_time,
+      includeTrafficSegments: input.include_traffic_segments,
       computeAlternativeRoutes: input.compute_alternative_routes,
       avoidTolls: input.avoid_tolls,
       avoidHighways: input.avoid_highways,
@@ -813,6 +818,7 @@ class GoogleMapsMCPServer {
     const result = await this.googleMapsClient.routesMatrix(input.origins, input.destinations, {
       travelMode: input.travel_mode,
       routingPreference: input.routing_preference,
+      departureTime: input.departure_time,
       language: input.language,
       region: input.region,
       units: input.units

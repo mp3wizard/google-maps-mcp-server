@@ -94,6 +94,8 @@ export const RoutesComputeSchema = z.object({
   waypoints: z.array(WaypointSchema).optional(),
   travel_mode: z.enum(['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT']).optional(),
   routing_preference: z.enum(['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL']).optional(),
+  departure_time: z.string().optional(),
+  include_traffic_segments: z.boolean().optional(),
   compute_alternative_routes: z.boolean().optional(),
   avoid_tolls: z.boolean().optional(),
   avoid_highways: z.boolean().optional(),
@@ -108,6 +110,7 @@ export const RoutesMatrixSchema = z.object({
   destinations: z.array(z.union([LocationSchema, z.object({ address: z.string() })])),
   travel_mode: z.enum(['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT']).optional(),
   routing_preference: z.enum(['TRAFFIC_UNAWARE', 'TRAFFIC_AWARE', 'TRAFFIC_AWARE_OPTIMAL']).optional(),
+  departure_time: z.string().optional(),
   language: z.string().optional(),
   region: z.string().optional(),
   units: z.enum(['METRIC', 'IMPERIAL']).optional()
@@ -239,7 +242,24 @@ export interface PlaceResult {
 export interface RouteResult {
   distance_meters: number;
   duration_seconds: number;
+  /** Duration without traffic (free flow) */
+  static_duration_seconds?: number;
+  /** Traffic-aware duration; only set when the request was traffic-aware (same as duration_seconds) */
   duration_in_traffic_seconds?: number;
+  /** duration_seconds - static_duration_seconds: extra time caused by traffic */
+  traffic_delay_seconds?: number;
+  /** Slow and jammed stretches along the route; only with include_traffic_segments */
+  traffic?: {
+    summary_meters: { normal: number; slow: number; traffic_jam: number; unknown: number };
+    segments: Array<{
+      speed: string;
+      start_index: number;
+      end_index: number;
+      start: Location;
+      end: Location;
+      length_meters: number;
+    }>;
+  };
   polyline: string;
   tolls?: {
     currency: string;

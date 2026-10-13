@@ -1,5 +1,33 @@
 import { GeocodeResult, Location, MCPError, PlaceResult, RouteResult } from './types.js';
 
+// Decode a Google encoded polyline (precision 1e5) into points
+function decodePolyline(encoded: string): Location[] {
+  const points: Location[] = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    for (const axis of ['lat', 'lng'] as const) {
+      let result = 0, shift = 0, byte: number;
+      do {
+        byte = encoded.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20 && index < encoded.length);
+      const delta = result & 1 ? ~(result >> 1) : result >> 1;
+      if (axis === 'lat') lat += delta; else lng += delta;
+    }
+    points.push({ lat: lat / 1e5, lng: lng / 1e5 });
+  }
+  return points;
+}
+
+function haversineMeters(a: Location, b: Location): number {
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLng = (b.lng - a.lng) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+
 export class GoogleMapsClient {
   private apiKey: string;
   private baseUrl = 'https://maps.googleapis.com/maps/api';
@@ -472,6 +500,95 @@ export class GoogleMapsClient {
     return photoUri;
   }
 
+  // Validates the travel mode / traffic / departure-time combination before any request is made.
+  // routingPreference is only accepted by the Routes API for driving modes, so it is omitted otherwise.
+  private buildRoutingOptions(
+    endpoint: string,
+    options: { travelMode?: string; routingPreference?: string; departureTime?: string }
+  ): { fields: any; trafficAware: boolean } {
+    const travelMode = options.travelMode || 'DRIVE';
+    const supportsTraffic = travelMode === 'DRIVE' || travelMode === 'TWO_WHEELER';
+    const fields: any = { travelMode };
+
+    if (supportsTraffic) {
+      fields.routingPreference = options.routingPreference || 'TRAFFIC_AWARE';
+    } else if (options.routingPreference) {
+      throw this.createMCPError(
+        'INVALID_REQUEST',
+        `routing_preference is only valid for travel_mode DRIVE (got ${travelMode})`,
+        { endpoint }
+      );
+    }
+
+    if (options.departureTime) {
+      const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+      const time = Date.parse(options.departureTime);
+      if (!rfc3339.test(options.departureTime) || Number.isNaN(time)) {
+        throw this.createMCPError(
+          'INVALID_REQUEST',
+          'departure_time must be an RFC 3339 timestamp with a time zone, e.g. 2026-10-14T08:00:00+07:00',
+          { endpoint }
+        );
+      }
+      // Google only accepts a past departure time for TRANSIT; allow a minute of clock skew
+      if (travelMode !== 'TRANSIT' && time < Date.now() - 60_000) {
+        throw this.createMCPError('INVALID_REQUEST', 'departure_time must not be in the past', { endpoint });
+      }
+      fields.departureTime = new Date(time).toISOString();
+    }
+
+    return { fields, trafficAware: supportsTraffic && fields.routingPreference !== 'TRAFFIC_UNAWARE' };
+  }
+
+  // Slow and jammed stretches of the route, from the traffic-aware polyline
+  private summarizeTraffic(encodedPolyline: string | undefined, intervals: any[]): NonNullable<RouteResult['traffic']> {
+    const points = encodedPolyline ? decodePolyline(encodedPolyline) : [];
+    const summary = { normal: 0, slow: 0, traffic_jam: 0, unknown: 0 };
+    const segments: NonNullable<RouteResult['traffic']>['segments'] = [];
+    const round = (n: number) => Math.round(n * 1e5) / 1e5;
+
+    for (const interval of intervals) {
+      const start = Math.max(0, interval.startPolylinePointIndex ?? 0);
+      const end = Math.min(points.length - 1, interval.endPolylinePointIndex ?? -1);
+      if (!(end > start)) continue;
+
+      let length = 0;
+      for (let i = start; i < end; i++) length += haversineMeters(points[i], points[i + 1]);
+
+      const speed: string = interval.speed || 'UNKNOWN';
+      const key = speed === 'NORMAL' ? 'normal' : speed === 'SLOW' ? 'slow' : speed === 'TRAFFIC_JAM' ? 'traffic_jam' : 'unknown';
+      summary[key] += length;
+
+      if (speed === 'SLOW' || speed === 'TRAFFIC_JAM') {
+        const last = segments[segments.length - 1];
+        if (last && last.speed === speed && last.end_index === start) {
+          last.length_meters += length;
+          last.end_index = end;
+          last.end = { lat: round(points[end].lat), lng: round(points[end].lng) };
+        } else {
+          segments.push({
+            speed,
+            start_index: start,
+            end_index: end,
+            start: { lat: round(points[start].lat), lng: round(points[start].lng) },
+            end: { lat: round(points[end].lat), lng: round(points[end].lng) },
+            length_meters: length
+          });
+        }
+      }
+    }
+
+    return {
+      summary_meters: {
+        normal: Math.round(summary.normal),
+        slow: Math.round(summary.slow),
+        traffic_jam: Math.round(summary.traffic_jam),
+        unknown: Math.round(summary.unknown)
+      },
+      segments: segments.map(s => ({ ...s, length_meters: Math.round(s.length_meters) }))
+    };
+  }
+
   // Routes API v2 methods
   async routesCompute(
     origin: Location | { address: string },
@@ -480,6 +597,8 @@ export class GoogleMapsClient {
       waypoints?: Array<{ location: Location | { address: string }; via?: boolean }>;
       travelMode?: string;
       routingPreference?: string;
+      departureTime?: string;
+      includeTrafficSegments?: boolean;
       computeAlternativeRoutes?: boolean;
       avoidTolls?: boolean;
       avoidHighways?: boolean;
@@ -489,11 +608,20 @@ export class GoogleMapsClient {
       units?: string;
     } = {}
   ): Promise<{ routes: RouteResult[] }> {
+    const endpoint = '/directions/v2:computeRoutes';
+    const routing = this.buildRoutingOptions(endpoint, options);
+    if (options.includeTrafficSegments && !routing.trafficAware) {
+      throw this.createMCPError(
+        'INVALID_REQUEST',
+        'include_traffic_segments needs travel_mode DRIVE with routing_preference TRAFFIC_AWARE or TRAFFIC_AWARE_OPTIMAL',
+        { endpoint }
+      );
+    }
+
     const body: any = {
       origin: this.formatLocationForRoutes(origin),
       destination: this.formatLocationForRoutes(destination),
-      travelMode: options.travelMode || 'DRIVE',
-      routingPreference: options.routingPreference || 'TRAFFIC_AWARE'
+      ...routing.fields
     };
 
     if (options.waypoints?.length) {
@@ -512,18 +640,27 @@ export class GoogleMapsClient {
     if (options.region) body.regionCode = options.region;
     if (options.units) body.units = options.units;
 
+    // staticDuration (no traffic) is needed to report the traffic delay; the speed intervals only on request
+    let fieldMask = 'routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs';
+    if (options.includeTrafficSegments) {
+      body.extraComputations = ['TRAFFIC_ON_POLYLINE'];
+      fieldMask += ',routes.travelAdvisory.speedReadingIntervals';
+    }
+
     const data = await this.makeRequest(
-      '/directions/v2:computeRoutes',
+      endpoint,
       {},
       'POST',
       body,
       undefined,
       'https://routes.googleapis.com',
-      'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs'
+      fieldMask
     );
 
     return {
-      routes: (data.routes || []).map((route: any) => this.formatRouteResult(route))
+      routes: (data.routes || []).map((route: any) =>
+        this.formatRouteResult(route, routing.trafficAware, !!options.includeTrafficSegments)
+      )
     };
   }
 
@@ -533,16 +670,17 @@ export class GoogleMapsClient {
     options: {
       travelMode?: string;
       routingPreference?: string;
+      departureTime?: string;
       language?: string;
       region?: string;
       units?: string;
     } = {}
   ): Promise<any> {
+    const routing = this.buildRoutingOptions('/distanceMatrix/v2:computeRouteMatrix', options);
     const body: any = {
       origins: origins.map(o => ({ waypoint: this.formatLocationForRoutes(o) })),
       destinations: destinations.map(d => ({ waypoint: this.formatLocationForRoutes(d) })),
-      travelMode: options.travelMode || 'DRIVE',
-      routingPreference: options.routingPreference || 'TRAFFIC_AWARE'
+      ...routing.fields
     };
 
     if (options.language) body.languageCode = options.language;
@@ -680,7 +818,7 @@ export class GoogleMapsClient {
     return result;
   }
 
-  private formatRouteResult(route: any): RouteResult {
+  private formatRouteResult(route: any, trafficAware = false, includeTrafficSegments = false): RouteResult {
     const result: RouteResult = {
       distance_meters: route.distanceMeters || 0,
       duration_seconds: parseInt(route.duration?.replace('s', '') || '0'),
@@ -688,8 +826,18 @@ export class GoogleMapsClient {
       legs: []
     };
 
+    // `duration` already reflects traffic for a traffic-aware request; `staticDuration` is the same
+    // trip without traffic, so the difference is the delay caused by traffic.
     if (route.staticDuration) {
-      result.duration_in_traffic_seconds = parseInt(route.staticDuration.replace('s', '') || '0');
+      result.static_duration_seconds = parseInt(route.staticDuration.replace('s', '') || '0');
+      if (trafficAware) {
+        result.duration_in_traffic_seconds = result.duration_seconds;
+        result.traffic_delay_seconds = result.duration_seconds - result.static_duration_seconds;
+      }
+    }
+
+    if (includeTrafficSegments && Array.isArray(route.travelAdvisory?.speedReadingIntervals)) {
+      result.traffic = this.summarizeTraffic(route.polyline?.encodedPolyline, route.travelAdvisory.speedReadingIntervals);
     }
 
     if (route.travelAdvisory?.tollInfo) {

@@ -138,8 +138,8 @@ npx google-maps-mcp-server
 - **`places_photos`** - Get a keyless photo URL for a photo `name` (`places/{placeId}/photos/{photoRef}`) from the `photos` of a Places search or details result (Places API (New) Place Photos)
 
 ### Routing
-- **`routes_compute`** - Calculate optimal routes
-- **`routes_matrix`** - Compute distance matrices
+- **`routes_compute`** - Calculate routes. For driving the duration is traffic-aware and the result adds `static_duration_seconds` (no traffic) and `traffic_delay_seconds`; `departure_time` (RFC 3339 with time zone) predicts traffic for a later departure; `include_traffic_segments` lists the slow and jammed stretches (billed at a higher Routes rate). `routing_preference` applies to driving only
+- **`routes_matrix`** - Compute distance matrices (traffic-aware for driving; supports `departure_time`)
 
 ### Utilities
 - **`elevation_get`** - Get elevation data
