@@ -52,8 +52,8 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.18.2",
-    "zod": "^4.1.11"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
@@ -64,5 +64,12 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "overrides": {
+    "proxy-addr": "^2.0.8",
+    "body-parser": "^2.4.0",
+    "path-to-regexp": "^8.4.2",
+    "zod": "$zod",
+    "@hono/node-server": "^1.19.17"
   }
 }
